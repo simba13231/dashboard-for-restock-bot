@@ -19,10 +19,18 @@
 //                          Webhook in the Supabase dashboard, so this
 //                          function only ever runs off a real webhook
 //                          call and not a stray public POST.
+//   SITE_URL            - optional, defaults to the GitHub Pages URL
+//                          below. Used only to point the embed's
+//                          banner image at the right host.
 
 const DISCORD_BOT_TOKEN = Deno.env.get("DISCORD_BOT_TOKEN")!;
 const DISCORD_OWNER_ID = Deno.env.get("DISCORD_OWNER_ID")!;
 const SIGNUP_WEBHOOK_SECRET = Deno.env.get("SIGNUP_WEBHOOK_SECRET")!;
+const SITE_URL =
+  Deno.env.get("SITE_URL") ??
+  "https://simba13231.github.io/dashboard-for-restock-bot";
+
+const EMBED_COLOR = 0x5b3dd6; // matches the banner's indigo gradient
 
 interface WebhookPayload {
   type: string;
@@ -30,11 +38,19 @@ interface WebhookPayload {
   record?: {
     email?: string | null;
     raw_user_meta_data?: Record<string, unknown> | null;
+    raw_app_meta_data?: { provider?: string } | null;
     created_at?: string;
   };
 }
 
-async function sendDiscordDM(content: string): Promise<void> {
+interface SignupInfo {
+  email: string;
+  name: string | null;
+  provider: string;
+  createdAt: string;
+}
+
+async function sendDiscordDM(info: SignupInfo): Promise<void> {
   const channelRes = await fetch("https://discord.com/api/v10/users/@me/channels", {
     method: "POST",
     headers: {
@@ -52,6 +68,21 @@ async function sendDiscordDM(content: string): Promise<void> {
 
   const channel = await channelRes.json();
 
+  const embed = {
+    title: "🆕 New sign-up",
+    description: info.name
+      ? `**${info.name}** just logged into the dashboard.`
+      : "Someone just logged into the dashboard.",
+    color: EMBED_COLOR,
+    fields: [
+      { name: "Email", value: info.email, inline: true },
+      { name: "Provider", value: info.provider, inline: true },
+    ],
+    image: { url: `${SITE_URL}/notify/signup-banner.png` },
+    footer: { text: "PS99 Restock Dashboard" },
+    timestamp: info.createdAt,
+  };
+
   const messageRes = await fetch(
     `https://discord.com/api/v10/channels/${channel.id}/messages`,
     {
@@ -60,7 +91,7 @@ async function sendDiscordDM(content: string): Promise<void> {
         Authorization: `Bot ${DISCORD_BOT_TOKEN}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ embeds: [embed] }),
     },
   );
 
@@ -97,18 +128,18 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ skipped: true }), { status: 200 });
   }
 
-  const email = payload.record?.email ?? "unknown email";
-  const name =
-    (payload.record?.raw_user_meta_data?.full_name as string | undefined) ??
-    (payload.record?.raw_user_meta_data?.name as string | undefined) ??
-    null;
-
-  const content = name
-    ? `🆕 New signup on the dashboard: **${name}** (${email})`
-    : `🆕 New signup on the dashboard: ${email}`;
+  const info: SignupInfo = {
+    email: payload.record?.email ?? "unknown email",
+    name:
+      (payload.record?.raw_user_meta_data?.full_name as string | undefined) ??
+      (payload.record?.raw_user_meta_data?.name as string | undefined) ??
+      null,
+    provider: payload.record?.raw_app_meta_data?.provider ?? "unknown",
+    createdAt: payload.record?.created_at ?? new Date().toISOString(),
+  };
 
   try {
-    await sendDiscordDM(content);
+    await sendDiscordDM(info);
   } catch (err) {
     console.error(err);
     return new Response(JSON.stringify({ error: String(err) }), {
